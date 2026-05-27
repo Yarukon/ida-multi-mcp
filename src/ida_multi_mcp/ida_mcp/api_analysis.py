@@ -26,7 +26,9 @@ from .utils import (
     get_function,
     get_prototype,
     get_stack_frame_variables_internal,
+    decompile_checked,
     decompile_function_safe,
+    _extract_pseudocode,
     compact_whitespace,
     get_assembly_lines,
     get_all_xrefs,
@@ -39,6 +41,7 @@ from .utils import (
     BasicBlock,
     StructFieldQuery,
     InsnPattern,
+    IDAError,
 )
 
 # ============================================================================
@@ -166,11 +169,10 @@ def decompile(
     """Decompile function to pseudocode"""
     try:
         start = parse_address(addr)
-        code = decompile_function_safe(start)
-        if code is None:
-            return {"addr": addr, "code": None, "error": "Decompilation failed"}
+        cfunc = decompile_checked(start)
+        code = _extract_pseudocode(cfunc)
         return {"addr": addr, "code": code}
-    except Exception as e:
+    except IDAError as e:
         return {"addr": addr, "code": None, "error": str(e)}
 
 
@@ -807,8 +809,17 @@ def find(
                                 more = next_ea != idaapi.BADADDR
                                 break
                         ea += 1
-            except Exception:
-                pass
+            except Exception as e:
+                results.append(
+                    {
+                        "query": pattern_str,
+                        "matches": [],
+                        "count": 0,
+                        "cursor": {"done": True},
+                        "error": f"Search failed: {e}",
+                    }
+                )
+                continue
 
             results.append(
                 {
@@ -879,8 +890,17 @@ def find(
                             break
                     if more:
                         break
-            except Exception:
-                pass
+            except Exception as e:
+                results.append(
+                    {
+                        "query": value,
+                        "matches": [],
+                        "count": 0,
+                        "cursor": {"done": True},
+                        "error": f"Search failed: {e}",
+                    }
+                )
+                continue
 
             results.append(
                 {

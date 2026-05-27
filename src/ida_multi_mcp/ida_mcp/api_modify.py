@@ -13,7 +13,7 @@ import ida_ua
 
 from .rpc import tool
 from .sync import idasync, IDAError
-from .api_core import invalidate_funcs_cache, invalidate_globals_cache
+from .api_core import invalidate_funcs_cache, invalidate_globals_cache, invalidate_strings_cache
 from .utils import (
     parse_address,
     decompile_checked,
@@ -68,6 +68,26 @@ def set_comments(items: list[CommentOp] | CommentOp):
     if len(items) > _MAX_BATCH_SIZE:
         raise IDAError(f"Batch too large: maximum {_MAX_BATCH_SIZE} items per request")
 
+    # Validate inputs upfront
+    for i, item in enumerate(items):
+        addr_str = item.get("addr", "")
+        if not addr_str:
+            raise IDAError(f"Item {i}: 'addr' is required and must not be empty")
+        comment = item.get("comment")
+        if comment is None:
+            raise IDAError(f"Item {i}: 'comment' is required")
+
+    # Cache decompilation results per function within the batch to avoid
+    # re-decompiling the same function for every address.
+    _cfunc_cache: dict[int, object] = {}
+
+    def _get_cfunc(ea: int):
+        func = ida_funcs.get_func(ea)
+        func_start = func.start_ea if func else ea
+        if func_start not in _cfunc_cache:
+            _cfunc_cache[func_start] = decompile_checked(func_start)
+        return _cfunc_cache[func_start]
+
     results = []
     for item in items:
         addr_str = item.get("addr", "")
@@ -90,9 +110,9 @@ def set_comments(items: list[CommentOp] | CommentOp):
                 continue
 
             try:
-                cfunc = decompile_checked(ea)
-            except IDAError:
-                results.append({"addr": addr_str, "ok": True})
+                cfunc = _get_cfunc(ea)
+            except IDAError as e:
+                results.append({"addr": addr_str, "error": str(e)})
                 continue
 
             if ea == cfunc.entry_ea:
@@ -106,8 +126,7 @@ def set_comments(items: list[CommentOp] | CommentOp):
                 results.append(
                     {
                         "addr": addr_str,
-                        "ok": True,
-                        "error": f"Failed to set decompiler comment at {hex(ea)}",
+                        "error": f"Address {hex(ea)} not found in decompiler eamap",
                     }
                 )
                 continue
@@ -133,8 +152,8 @@ def set_comments(items: list[CommentOp] | CommentOp):
                 results.append(
                     {
                         "addr": addr_str,
-                        "ok": True,
-                        "error": f"Failed to set decompiler comment at {hex(ea)}",
+                        "error": f"Failed to set decompiler comment at {hex(ea)}: "
+                                 f"no valid ITP position found",
                     }
                 )
         except Exception as e:
@@ -626,6 +645,7 @@ def define_func(items: list[DefineOp] | DefineOp) -> list[DefineResult]:
     if had_success:
         invalidate_funcs_cache()
         invalidate_globals_cache()
+        invalidate_strings_cache()
 
     return results
 
@@ -644,6 +664,7 @@ def define_code(items: list[DefineOp] | DefineOp) -> list[DefineResult]:
         raise IDAError(f"Batch too large: maximum {_MAX_BATCH_SIZE} items per request")
 
     results: list[DefineResult] = []
+    had_success = False
     for item in items:
         addr_str = item.get("addr", "")
 
@@ -658,6 +679,7 @@ def define_code(items: list[DefineOp] | DefineOp) -> list[DefineResult]:
                 continue
             length = ida_ua.create_insn(ea)
             if length > 0:
+                had_success = True
                 results.append({"addr": addr_str, "ea": hex(ea), "length": length})
             else:
                 results.append({
@@ -667,6 +689,9 @@ def define_code(items: list[DefineOp] | DefineOp) -> list[DefineResult]:
                 })
         except Exception as e:
             results.append({"addr": addr_str, "error": str(e)})
+
+    if had_success:
+        invalidate_strings_cache()
 
     return results
 

@@ -12,6 +12,7 @@ import idaapi
 
 from .rpc import tool
 from .sync import idasync
+from .api_core import invalidate_strings_cache
 from .utils import (
     IntRead,
     IntWrite,
@@ -255,6 +256,7 @@ def patch(patches: list[MemoryPatch] | MemoryPatch) -> list[dict]:
         raise IDAError(f"Batch too large: maximum {_MAX_BATCH_SIZE} patches per request")
 
     results = []
+    had_success = False
 
     for patch in patches:
         try:
@@ -265,12 +267,16 @@ def patch(patches: list[MemoryPatch] | MemoryPatch) -> list[dict]:
                 raise ValueError(f"Patch size {len(data)} exceeds maximum of {_MAX_READ_SIZE} bytes")
 
             ida_bytes.patch_bytes(ea, data)
+            had_success = True
             results.append(
                 {"addr": patch["addr"], "size": len(data), "ok": True, "error": None}
             )
 
         except Exception as e:
             results.append({"addr": patch.get("addr"), "size": 0, "error": str(e)})
+
+    if had_success:
+        invalidate_strings_cache()
 
     return results
 

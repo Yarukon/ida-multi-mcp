@@ -981,39 +981,49 @@ def decompile_checked(addr: int):
     return cfunc
 
 
-def decompile_function_safe(ea: int) -> Optional[str]:
-    """Safely decompile a function, returning None on failure (uses cache)"""
+def _extract_pseudocode(cfunc) -> str:
+    """Extract pseudocode text from a decompiled cfunc, with address annotations.
+
+    Extracted from decompile_function_safe so decompile() can call
+    decompile_checked + this helper and still get annotated output.
+    """
     import ida_lines
     import ida_kernwin
 
+    sv = cfunc.get_pseudocode()
+    lines = []
+    for sl in sv:
+        sl: ida_kernwin.simpleline_t
+        item = ida_hexrays.ctree_item_t()
+        line_ea = None
+        if cfunc.get_line_item(sl.line, 0, False, None, item, None):
+            dstr: str | None = item.dstr()
+            if dstr:
+                ds = dstr.split(": ")
+                if len(ds) == 2:
+                    try:
+                        line_ea = int(ds[0], 16)
+                    except ValueError:
+                        pass
+        text = compact_whitespace(ida_lines.tag_remove(sl.line))
+        if line_ea is not None:
+            lines.append(f"{text} /*{line_ea:#x}*/")
+        else:
+            lines.append(text)
+    return "\n".join(lines)
+
+
+def decompile_function_safe(ea: int) -> Optional[str]:
+    """Safely decompile a function, returning None on failure.
+
+    Uses decompile_checked for diagnostic errors, but catches IDAError
+    and returns None for backward compatibility with callers that
+    expect None-on-failure semantics.
+    """
     try:
-        if not ida_hexrays.init_hexrays_plugin():
-            return None
-        cfunc = ida_hexrays.decompile(ea)
-        if not cfunc:
-            return None
-        sv = cfunc.get_pseudocode()
-        lines = []
-        for sl in sv:
-            sl: ida_kernwin.simpleline_t
-            item = ida_hexrays.ctree_item_t()
-            line_ea = None
-            if cfunc.get_line_item(sl.line, 0, False, None, item, None):
-                dstr: str | None = item.dstr()
-                if dstr:
-                    ds = dstr.split(": ")
-                    if len(ds) == 2:
-                        try:
-                            line_ea = int(ds[0], 16)
-                        except ValueError:
-                            pass
-            text = compact_whitespace(ida_lines.tag_remove(sl.line))
-            if line_ea is not None:
-                lines.append(f"{text} /*{line_ea:#x}*/")
-            else:
-                lines.append(text)
-        return "\n".join(lines)
-    except Exception:
+        cfunc = decompile_checked(ea)
+        return _extract_pseudocode(cfunc)
+    except IDAError:
         return None
 
 
