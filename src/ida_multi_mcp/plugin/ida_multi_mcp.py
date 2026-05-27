@@ -14,7 +14,6 @@ from pathlib import Path
 
 import idaapi
 import ida_kernwin
-import idc
 
 # Import registration functions (add parent to path for ida_multi_mcp imports)
 _pkg_dir = str(Path(__file__).parent.parent.parent)
@@ -78,7 +77,6 @@ class IdaMultiMcpPlugin(idaapi.plugin_t):
         self.instance_id = None
         self.server_port = None
         self.hooks_installed = False
-        self._batch_state = None
 
     def init(self):
         """Plugin initialization — install hooks, start if DB already open."""
@@ -107,13 +105,6 @@ class IdaMultiMcpPlugin(idaapi.plugin_t):
             return
 
         print("[ida-multi-mcp] Starting MCP server...")
-
-        # Enable batch mode to suppress IDA dialogs during MCP tool execution.
-        # This is done ONCE at server start (not per-request) to avoid the
-        # idc.batch() toggle from auto-dismissing active modal dialogs.
-        if self._batch_state is None:
-            self._batch_state = idc.batch(1)
-            print("[ida-multi-mcp] Batch mode enabled")
 
         # Get binary metadata for registration
         metadata = get_binary_metadata()
@@ -220,12 +211,6 @@ class IdaMultiMcpPlugin(idaapi.plugin_t):
             self.mcp_server = None
 
         self.server_port = None
-
-        # Restore original batch mode state
-        if self._batch_state is not None:
-            idc.batch(self._batch_state)
-            print(f"[ida-multi-mcp] Batch mode restored to {self._batch_state}")
-            self._batch_state = None
 
     def run(self, arg):
         """Toggle server on/off when activated via menu or hotkey."""

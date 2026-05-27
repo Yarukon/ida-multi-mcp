@@ -56,7 +56,12 @@ call_stack = queue.LifoQueue()
 
 
 def _sync_wrapper(ff):
-    """Call a function ff with a specific IDA safety_mode."""
+    """Call a function ff on the IDA main thread.
+
+    The batch toggle and modal-dialog check happen here (on the main thread,
+    inside execute_sync) so that QApplication.activeModalWidget() is accessed
+    safely from the GUI thread.
+    """
 
     res_container = queue.Queue()
 
@@ -68,7 +73,17 @@ def _sync_wrapper(ff):
 
         call_stack.put((ff.__name__))
         try:
-            res_container.put(ff())
+            # Per-request batch toggle with modal-dialog guard.
+            # batch(1) suppresses dialogs the tool itself triggers;
+            # we skip the toggle when a user dialog is already active.
+            if not _modal_dialog_active():
+                old_batch = idc.batch(1)
+                try:
+                    res_container.put(ff())
+                finally:
+                    idc.batch(old_batch)
+            else:
+                res_container.put(ff())
         except Exception as x:
             res_container.put(x)
         finally:
@@ -89,12 +104,32 @@ def _normalize_timeout(value: object) -> float | None:
         return None
 
 
+def _modal_dialog_active() -> bool:
+    """Return True if a Qt modal dialog is currently open.
+
+    When a modal dialog is active, toggling idc.batch() would auto-dismiss
+    it with the default button.  We skip the batch toggle in that case so
+    user-initiated dialogs are preserved.
+    """
+    try:
+        using_pyside6 = (ida_major > 9) or (ida_major == 9 and ida_minor >= 2)
+        if using_pyside6:
+            from PySide6 import QtWidgets
+        else:
+            from PyQt5 import QtWidgets
+        app = QtWidgets.QApplication.instance()
+        if app is None:
+            return False
+        return app.activeModalWidget() is not None
+    except Exception:
+        return False
+
+
 def sync_wrapper(ff, timeout_override: float | None = None):
     """Execute an IDA tool on the main thread with timeout and cancellation support.
 
-    Batch mode is managed at the plugin/server lifecycle level (not per-request)
-    to avoid toggling idc.batch() on every call, which would auto-dismiss any
-    active modal dialog by answering it with the default button.
+    The batch toggle and modal-dialog guard are inside _sync_wrapper (on the
+    main thread) so that QApplication.activeModalWidget() is accessed safely.
     """
     # Capture cancel event from thread-local before execute_sync
     cancel_event = get_current_cancel_event()
@@ -172,16 +207,9 @@ def tool_timeout(seconds: float):
 
 
 def is_window_active():
-    """Returns whether IDA is currently active."""
-    # Source: https://github.com/OALabs/hexcopy-ida/blob/8b0b2a3021d7dc9010c01821b65a80c47d491b61/hexcopy.py#L30
-    using_pyside6 = (ida_major > 9) or (ida_major == 9 and ida_minor >= 2)
-    
-    if using_pyside6:
-        from PySide6 import QtWidgets
-    else:
-        from PyQt5 import QtWidgets
-    
-    app = QtWidgets.QApplication.instance()
-    if app is None:
-        return False
-    return app.activeWindow() is not None
+    """Returns True if a Qt modal dialog is currently shown.
+
+    Deprecated name — kept for backwards compatibility.
+    Prefer _modal_dialog_active() directly.
+    """
+    return _modal_dialog_active()
